@@ -11,11 +11,52 @@ import requests
 from tqdm import tqdm
 from transformers import AutoProcessor, Qwen2AudioForConditionalGeneration
 from transformers.pipelines.audio_utils import ffmpeg_read
-
+from datasets import load_dataset
 
 ds_collections = {
     'covost2': {'path': 'st/covost2_eval.jsonl'}
 }
+
+
+class AudioDatasetModified(torch.utils.data.Dataset):
+
+    def __init__(self, dname, split, limit=-1):
+        
+        if dname ==  "en_de":
+            ds = load_dataset("fixie-ai/covost2", "en_de")
+            prompt="<|audio_bos|><|AUDIO|><|audio_eos|> Detect the language and translate the speech into German: <|en|>"
+            source = 'covost_en_de_dev'
+        elif dname == "en_zh":
+            ds = load_dataset("fixie-ai/covost2", "en_zh-CN")
+            prompt="<|audio_bos|><|AUDIO|><|audio_eos|> Detect the language and translate the speech into Mandarin: <|en|>"
+            source = "covost_en_zh_dev"
+        else:
+            raise NotImplementedError
+        self.ds = ds[split]
+        self.prompt = prompt
+        self.source = source
+        self.limit = limit
+
+    def __len__(self):
+        if self.limit > 0:
+            return min(self.limit, len(self.ds))
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        data = self.ds[idx]
+        audio = data['audio']['array']
+        audio_path = data['audio']['path']
+        sampling_rate = data['audio']['sampling_rate']
+        gt = data['translation']
+
+        return {
+            'audio': audio,
+            'sampling_rate' : sampling_rate,
+            'prompt': self.prompt,
+            'source': self.source,
+            'audio_path': audio_path,
+            'gt': gt
+        }
 
 
 class AudioDataset(torch.utils.data.Dataset):
@@ -60,6 +101,14 @@ def collate_fn(inputs, processor):
     inputs = processor(text=input_texts, audios=input_audios, sampling_rate=processor.feature_extractor.sampling_rate, return_tensors="pt", padding=True)
     return inputs, audio_path, source, gt
 
+def collate_fn_modified(inputs, processor):
+    input_texts = [_['prompt'] for _ in inputs]
+    source = [_['source'] for _ in inputs]
+    gt = [_['gt'] for _ in inputs]
+    audio_path = [_['audio_path'] for _ in inputs]
+    input_audios = [_['audio'] for _ in inputs]
+    inputs = processor(text=input_texts, audios=input_audios, sampling_rate=processor.feature_extractor.sampling_rate, return_tensors="pt", padding=True)
+    return inputs, audio_path, source, gt
 
 class InferenceSampler(torch.utils.data.sampler.Sampler):
 
@@ -92,10 +141,12 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', type=str, default='Qwen/Qwen2-Audio-7B')
-    parser.add_argument('--dataset', type=str, default='')
+    parser.add_argument('--dataset', type=str, default='en_de')
+    parser.add_argument('--split', type=str, default='validation')
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--limit', type=int, default=-1)
     args = parser.parse_args()
 
     torch.distributed.init_process_group(
@@ -114,9 +165,11 @@ if __name__ == '__main__':
     processor.tokenizer.padding_side = 'left'
 
     random.seed(args.seed)
-    dataset = AudioDataset(
-        ds=ds_collections[args.dataset],
-    )
+    #dataset = AudioDataset(
+    #    ds=ds_collections[args.dataset],
+    #)
+    dataset = AudioDatasetModified(args.dataset, args.split, limit=args.limit)
+    print("Total samples:", len(dataset))
     data_loader = torch.utils.data.DataLoader(
         dataset=dataset,
         sampler=InferenceSampler(len(dataset)),
@@ -124,7 +177,7 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=False,
-        collate_fn=partial(collate_fn, processor=processor),
+        collate_fn=partial(collate_fn_modified, processor=processor),
     )
 
     gts = []
@@ -132,7 +185,8 @@ if __name__ == '__main__':
     rets = []
     audio_paths = []
     for _, (inputs, audio_path, source, gt) in tqdm(enumerate(data_loader)):
-        inputs['input_ids'] = inputs['input_ids'].to('cuda')
+        for k in inputs.keys():
+            inputs[k] = inputs[k].to('cuda')
         output_ids = model.generate(**inputs, max_new_tokens=256, min_new_tokens=1, do_sample=False)
         output_ids = output_ids[:, inputs.input_ids.size(1):]
         output = processor.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
