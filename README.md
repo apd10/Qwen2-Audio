@@ -2,7 +2,7 @@ Modified from original repo to work with huggingface covst2 dataset on en-de and
 
 Use the following command to evaluate.
 ```
-torchrun --master-addr localhost --master-port 12335 --nproc-per-node 8 evaluate_st.py --batch-size 1 --limit 10 --dataset en_zh --split test
+torchrun --master-addr localhost --master-port 12335 --nproc-per-node 8 evaluate_st.py --batch-size 1  --dataset en_zh --split test
 ```
 
 --------------------- Original README below --------------------
