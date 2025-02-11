@@ -1,3 +1,13 @@
+Modified from original repo to work with huggingface covst2 dataset on en-de and en-zh tasks. 
+
+Use the following command to evaluate.
+```
+torchrun --master-addr localhost --master-port 12335 --nproc-per-node 8 evaluate_st.py --batch-size 1 --limit 10 --dataset en_zh --split test
+```
+
+--------------------- Original README below --------------------
+
+
 <p align="left">
         <a href="README_CN.md">中文</a> &nbsp｜ &nbsp English&nbsp&nbsp
 </p>
